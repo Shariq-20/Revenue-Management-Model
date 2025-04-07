@@ -1,0 +1,137 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Feb 24 17:25:36 2024
+
+@author: DELL
+"""
+
+from pyomo.environ import *
+import pandas as pd
+import numpy as np
+
+#reading the file
+file_name = "WCG_DataSetV1.xlsx"
+df = pd.read_excel(file_name, "WCG Data", index_col=0)
+
+# Data cleaning
+df = df.iloc[7:-1,0:-3]
+columns_to_drop = df.columns[[1, 2]]
+df = df.drop(columns=columns_to_drop)
+df.iloc[0,:] = 0 
+df.iloc[-1,:] = 0 
+df = df.iloc[:,1:]
+
+
+#reading initial inventory and total number of containers
+totalcontainers = 300
+initial_inventory = 77
+
+#reading leasing week, leasing length, leasing price and demand in each week, returned containers from last year
+leasing_price = df.iloc[:,[0, 4, 8, 12]].to_numpy()
+demand = df.iloc[:, [1, 5, 9, 13]].to_numpy()
+leasing_week = df.index
+leasing_length_week = [1, 4, 8, 16]
+leasing_length_days = leasing_length_week*7
+Return1 = df.iloc[0,3]
+Return2 = df.iloc[0:4,7].to_numpy()
+Return3 = df.iloc[0:8,11].to_numpy()
+Return4 = df.iloc[0:16,15].to_numpy()
+
+
+
+model = ConcreteModel()
+
+#define 2 dimensional variables leasing week and length of leasing. There should be 52*4 = 208 number of variables in total
+model.x = Var(range(len(leasing_week)),range(len(leasing_length_week)), domain= NonNegativeIntegers)
+
+
+#define objective function
+model.obj = Objective(expr = sum(model.x[i,j]*leasing_price[i,j]*leasing_length_week[j]*7 for i in range(len(leasing_week)) for j in range(len(leasing_length_week))), sense = maximize)
+
+#define inventory constraints by considering returned containers from last year
+def inventory_const(model, i):
+    return (
+        sum(model.x[i, j] for j in range(len(leasing_length_week))) <=
+        (
+            (
+                initial_inventory
+            ) +
+            (
+                model.x[(i - 1), 0] if i >= 2 else 0
+            ) +
+            (
+                model.x[(i - 4), 1] if i >= 5 else 0
+            ) +
+            (
+                model.x[(i - 8), 2] if i >= 9 else 0
+            ) +
+            (
+                model.x[(i - 16), 3] if i >= 17 else 0
+            ) +
+            sum(Return1 + Return2[i] + Return3[i] + Return4[i] for j in range(len(leasing_length_week)) if i <= 3) +
+            sum(Return3[i] + Return4[i] for j in range(len(leasing_length_week)) if i > 3 and i<=7) +
+            sum(Return4[i] for j in range(len(leasing_length_week)) if i > 7 and i<=15) -
+            sum(model.x[i - 1, j] for j in range(len(leasing_length_week)) if i >= 2)
+        )
+    )
+
+model.invenconst = Constraint(range(len(leasing_week)), rule=inventory_const)
+
+
+#total number of container constraint
+def capacity_const(model,i):
+    return (        
+        + sum(model.x[i,j] for j in range(len(leasing_length_week)))
+        
+        + sum(model.x[i-1,j] for j in range(len(leasing_length_week)) if i>=1 and j>=1)
+        
+        + sum(model.x[i-2,j] for j in range(len(leasing_length_week)) if i>=2 and j>=1)
+        
+        + sum(model.x[i-3,j] for j in range(len(leasing_length_week)) if i>=3 and j>=1)
+        
+        + sum(model.x[i-4,j] for j in range(len(leasing_length_week)) if i>=4 and j>=2)
+        
+        + sum(model.x[i-5,j] for j in range(len(leasing_length_week)) if i>=5 and j>=2)
+        
+        + sum(model.x[i-6,j] for j in range(len(leasing_length_week)) if i>=6 and j>=2)
+        
+        + sum(model.x[i-7,j] for j in range(len(leasing_length_week)) if i>=7 and j>=2)
+        
+        + sum(model.x[i-8,j] for j in range(len(leasing_length_week)) if i>=8 and j>=3)
+        
+        + sum(model.x[i-9,j] for j in range(len(leasing_length_week)) if i>=9 and j>=3)
+        
+        + sum(model.x[i-10,j] for j in range(len(leasing_length_week)) if i>=10 and j>=3)
+        
+        + sum(model.x[i-11,j] for j in range(len(leasing_length_week)) if i>=11 and j>=3)
+        
+        + sum(model.x[i-12,j] for j in range(len(leasing_length_week)) if i>=12 and j>=3)
+        
+        + sum(model.x[i-13,j] for j in range(len(leasing_length_week)) if i>=13 and j>=3)
+        
+        + sum(model.x[i-14,j] for j in range(len(leasing_length_week)) if i>=14 and j>=3)
+        
+        + sum(model.x[i-15,j] for j in range(len(leasing_length_week)) if i>=15 and j>=3)) <= 300
+
+model.capacitycost = Constraint(range(len(leasing_week)), rule=capacity_const)
+                                
+
+#defining demand constraint
+def demand_const (model, i, j):
+    return model.x[i,j] <= demand[i,j]
+model.demandconst2 = Constraint(range(len(leasing_week)), range(len(leasing_length_week)), rule=demand_const)
+
+
+#solving
+solver = SolverFactory('glpk')
+results = solver.solve(model)
+if (results.solver.status == SolverStatus.ok) and (results.solver.termination_condition == TerminationCondition.optimal):
+    print('total revenue is: ', model.obj())
+    
+#creating data sheet to see weekly accepted leasing
+weekly_data = []
+for i in range(len(leasing_week)):
+    weekly_data.append({"Week": i+1 , "1_week": model.x[i,0](), "4_week": model.x[i,1](), "8_week": model.x[i,2](),"16_week": model.x[i,3]()})
+            
+df_weekly_data = pd.DataFrame(weekly_data)        
+df_weekly_data.to_excel("RM_model_weekly_Data.xlsx", index=False)
